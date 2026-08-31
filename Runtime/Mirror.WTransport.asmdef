@@ -1,0 +1,16 @@
+{
+    "name": "Mirror.WTransport",
+    "rootNamespace": "Mirror.WTransport",
+    "references": [
+        "Mirror"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": true,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

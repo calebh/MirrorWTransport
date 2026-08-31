@@ -1,0 +1,12 @@
+# Unity meta files are generated on import; keep them out of the package repo.
+*.meta
+
+# Rust build output
+Native~/mirror-wtransport/target/
+Native~/mirror-wtransport/Cargo.lock
+
+# Native libraries are build products, not sources.
+Runtime/Plugins/x86_64/*.dll
+Runtime/Plugins/x86_64/*.so
+Runtime/Plugins/x86_64/*.dylib
+Runtime/Plugins/x86_64/*.pdb

@@ -1,0 +1,165 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>MirrorWTransport smoke test</title>
+<style>
+  body { font: 14px/1.5 system-ui, sans-serif; margin: 2rem; max-width: 46rem; }
+  label { display: block; margin: .75rem 0 .25rem; font-weight: 600; }
+  input { width: 100%; padding: .4rem; font: inherit; box-sizing: border-box; }
+  button { margin-top: 1rem; padding: .5rem 1rem; font: inherit; }
+  #log { margin-top: 1.5rem; padding: .75rem; background: #111; color: #ddd;
+         white-space: pre-wrap; border-radius: 4px; min-height: 8rem; }
+  .warn { color: #fc0; } .err { color: #f66; } .ok { color: #6f6; }
+</style>
+
+<h1>MirrorWTransport smoke test</h1>
+<p>
+  Connects to a MirrorWTransport server, completes the handshake and echoes a message on both
+  channels. Use it to check that a server is reachable and that its certificate is accepted, without
+  building the Unity WebGL player first.
+</p>
+<p>
+  Serve this page over https or from localhost: <code>WebTransport</code> does not exist in an
+  insecure context.
+</p>
+
+<label for="url">Server url</label>
+<input id="url" value="https://localhost:7777/">
+
+<label for="hash">Certificate hash (leave empty for a real certificate)</label>
+<input id="hash" placeholder="b1:7c:9f:...:2e">
+
+<button id="go">Connect</button>
+
+<div id="log"></div>
+
+<script>
+"use strict";
+
+// Must match common.rs and MirrorWTransport.jslib.
+const PROLOGUE = new Uint8Array([77, 87, 84, 49]); // "MWT1"
+const FRAME_HEADER = 5;
+
+const logElement = document.getElementById("log");
+
+function log(message, cls) {
+    const line = document.createElement("div");
+    if (cls) line.className = cls;
+    line.textContent = message;
+    logElement.appendChild(line);
+}
+
+function parseHash(text) {
+    const hex = text.replace(/[^0-9a-fA-F]/g, "");
+    if (hex.length !== 64) return null;
+    const bytes = new Uint8Array(32);
+    for (let i = 0; i < 32; ++i) bytes[i] = parseInt(hex.substr(i * 2, 2), 16);
+    return bytes;
+}
+
+function frame(channel, payload) {
+    const out = new Uint8Array(FRAME_HEADER + payload.length);
+    new DataView(out.buffer).setUint32(0, payload.length, false);
+    out[4] = channel;
+    out.set(payload, FRAME_HEADER);
+    return out;
+}
+
+async function run() {
+    logElement.textContent = "";
+
+    const url = document.getElementById("url").value.trim();
+    const hashText = document.getElementById("hash").value.trim();
+
+    const options = {};
+    if (hashText.length > 0) {
+        const hash = parseHash(hashText);
+        if (!hash) {
+            log("that is not a 32 byte SHA-256 hash", "err");
+            return;
+        }
+        options.serverCertificateHashes = [{ algorithm: "sha-256", value: hash }];
+    }
+
+    log("connecting to " + url + " ...");
+
+    let transport;
+    try {
+        transport = new WebTransport(url, options);
+    } catch (e) {
+        log("could not create the session: " + e, "err");
+        return;
+    }
+
+    transport.closed
+        .then(() => log("session closed", "warn"))
+        .catch(e => log("session closed with an error: " + e, "err"));
+
+    try {
+        await transport.ready;
+    } catch (e) {
+        log("handshake failed: " + e, "err");
+        log("if this is a self signed server, check the hash matches the one it printed.", "warn");
+        return;
+    }
+    log("QUIC session established", "ok");
+
+    const stream = await transport.createBidirectionalStream();
+    const writer = stream.writable.getWriter();
+    const reader = stream.readable.getReader();
+
+    await writer.write(PROLOGUE);
+    log("sent prologue, waiting for the server to accept the reliable stream ...");
+
+    // The reply is four bytes, possibly split across chunks.
+    const received = [];
+    let total = 0;
+    while (total < PROLOGUE.length) {
+        const { value, done } = await reader.read();
+        if (done) {
+            log("the server closed the stream before replying", "err");
+            return;
+        }
+        received.push(value);
+        total += value.length;
+    }
+
+    const joined = new Uint8Array(total);
+    let at = 0;
+    for (const chunk of received) { joined.set(chunk, at); at += chunk.length; }
+
+    for (let i = 0; i < PROLOGUE.length; ++i) {
+        if (joined[i] !== PROLOGUE[i]) {
+            log("the server is not speaking the MirrorWTransport protocol", "err");
+            return;
+        }
+    }
+
+    log("handshake complete: the server accepted this connection", "ok");
+
+    // Anything sent from here on is not valid Mirror traffic, so the server
+    // will hand it to Mirror and Mirror will most likely drop the connection.
+    // That is fine: reaching this point is what the test is for.
+    const hello = new TextEncoder().encode("hello from the smoke test");
+    await writer.write(frame(0, hello));
+    log("sent " + hello.length + " bytes on reliable channel 0");
+
+    const datagram = new Uint8Array(1 + hello.length);
+    datagram[0] = 1;
+    datagram.set(hello, 1);
+    const datagramWriter = transport.datagrams.writable.getWriter();
+    await datagramWriter.write(datagram);
+    log("sent " + hello.length + " bytes as a datagram on channel 1");
+    log("max datagram size reported by this browser: " + transport.datagrams.maxDatagramSize);
+
+    log("done. The server should now log a disconnect once it fails to parse the payload.", "warn");
+}
+
+document.getElementById("go").addEventListener("click", () => {
+    run().catch(e => log("unexpected failure: " + e, "err"));
+});
+
+if (typeof WebTransport === "undefined") {
+    log("this browser does not support WebTransport", "err");
+    document.getElementById("go").disabled = true;
+}
+</script>

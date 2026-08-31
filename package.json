@@ -1,0 +1,19 @@
+{
+  "name": "com.mirror.wtransport",
+  "version": "0.1.0",
+  "displayName": "Mirror WebTransport",
+  "description": "WebTransport (HTTP/3 over QUIC) transport for Mirror. Browser clients use the native WebTransport API; servers and desktop clients use a Rust library built on wtransport.",
+  "unity": "2021.3",
+  "keywords": [
+    "mirror",
+    "networking",
+    "transport",
+    "webtransport",
+    "quic",
+    "http3",
+    "webgl"
+  ],
+  "documentationUrl": "",
+  "changelogUrl": "",
+  "licensesUrl": ""
+}
