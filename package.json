@@ -13,7 +13,9 @@
     "http3",
     "webgl"
   ],
-  "documentationUrl": "",
-  "changelogUrl": "",
-  "licensesUrl": ""
+  "license": "MIT",
+  "author": {
+    "name": "Caleb Helbling (Extensional Software)",
+    "url": "https://www.extensional.software/"
+  }
 }
