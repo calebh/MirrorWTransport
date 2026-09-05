@@ -20,7 +20,7 @@ and a browser client can sit in the same game.
 * Unity 2021.3 or newer.
 * Mirror (developed against 96.0.1).
 * A [Rust toolchain](https://rustup.rs) to build the native library. Rust 1.88 or newer.
-* A browser with WebTransport: Chrome/Edge 97+, Firefox 114+. Safari does not support it yet.
+* A browser with WebTransport. Check the compatibility tables available online for more info.
 
 ## Installation
 
@@ -74,7 +74,52 @@ For a client running in the editor or a standalone player there is also
 `Client Allow Invalid Certificates`, which skips validation entirely. It is a development shortcut
 with no browser equivalent — never ship it enabled.
 
-## Production: real certificates
+## Notes on self signed certificate
+
+To use the self signed certificate with your game, you need to take care of two things:
+
+1. Send the hash of the certificate to the game client. In my game, I do this using a master server which also provides the server list to the client. The server list is retrieved using a UnityWebRequest, cross origin (make sure your master server has permissive CORS), and is then parsed by the client. When the server is running the hash of the self signed certificate can be retrieved by the `ServerCertificateHash` property of the `WebTransportTransport` class.
+2. Your self-signed certificate needs to be valid for the IP that the client is trying to connect to. In my game, my master server provides an endpoint to retrieve the external IP using a UnityWebRequest. This IP, along with all of the network interfaces IP of the local machine (to allow connection over LAN) and localhost are combined. All of these IPs need to be placed in the `selfSignedSubjectAltNames` of the `WebTransportTransport` class.
+
+Here is the method I use to determine the subject names in my game:
+
+```
+private async void DoStartServer() {
+    // To generate the web self signed certificate, we need to know which IPs to generate
+    // the certificate for. Let's go ahead and begin with all of the localhost IPs
+    string subjectNames = "localhost,127.0.0.1,::1";
+    
+    // Now try to retrieve the external IP address of the server by bouncing off the master server
+    string externalIp = await GetExternalIp();
+    
+    if (externalIp != null) {
+        Debug.Log($"Master server determined external IP of {externalIp}");
+        subjectNames += $",{externalIp}";
+    } else {
+        Debug.Log("Failed to retrieve external IP from master server");
+    }
+    
+    // Now let's add all the local (LAN) IP addresses for all the different network interfaces
+    IPHostEntry hostEntry = await Dns.GetHostEntryAsync(Dns.GetHostName());
+    foreach (IPAddress localIp in hostEntry.AddressList) {
+        if (localIp.AddressFamily == AddressFamily.InterNetwork) {
+            // Blindly add all the interfaces
+            subjectNames += $",{localIp}";
+        }
+    }
+    
+    Debug.Log($"Creating web encryption certificate for subject names {subjectNames}");
+    
+    WebTransport.selfSignedSubjectAltNames = subjectNames;
+
+    // Call the StartServer method of the NetworkManager
+    StartServer();
+}
+```
+
+## Real certificates
+
+**Using a legitimate fully signed certificate seems troublesome to use in production when the self-signed option with the hash is available.**
 
 Set `Certificate Mode` to `PemFiles` and point `Certificate Path` and `Key Path` at a real chain,
 for example the `fullchain.pem` / `privkey.pem` that Let's Encrypt produces. Leave
@@ -183,7 +228,6 @@ busy server does not allocate per message.
 * **No host mode over the network.** Mirror's host mode uses a local connection and never touches the
   transport, so that works; but a WebGL build cannot run the server, because browsers can only be
   WebTransport clients. `ServerStart` logs an error there.
-* **Safari** has no WebTransport support at the time of writing.
 * **Tail data on disconnect.** When either side disconnects, frames already queued locally are
   flushed first, but data still in flight on the network can be lost when the QUIC connection closes.
   This is normal for UDP based transports and matches how Mirror's KCP transport behaves.
