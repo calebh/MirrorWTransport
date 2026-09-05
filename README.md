@@ -83,7 +83,7 @@ To use the self signed certificate with your game, you need to take care of two 
 
 Here is the method I use to determine the subject names in my game:
 
-```
+```csharp
 private async void DoStartServer() {
     // To generate the web self signed certificate, we need to know which IPs to generate
     // the certificate for. Let's go ahead and begin with all of the localhost IPs
