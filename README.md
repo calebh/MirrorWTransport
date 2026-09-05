@@ -24,25 +24,28 @@ and a browser client can sit in the same game.
 
 ## Installation
 
-1. Copy this folder into your project, or add it through the Package Manager
-   (*Add package from disk…* → `package.json`).
-2. Build the native library:
+Open the package manager and install using this GitHub's URL:
 
-   ```bash
-   powershell -ExecutionPolicy Bypass -File Native~/build.ps1
-   ```
+```
+https://github.com/calebh/MirrorWTransport.git
+```
 
-   ```bash
-   ./Native~/build.sh
-   ```
+Add the **Web Transport Transport** component to your `NetworkManager` object and assign it to the `Transport` field.
 
-   Both drop the result into `Runtime/Plugins/x86_64/`. Unity imports it on the next domain reload;
-   check the Plugin Inspector once to confirm the platform and CPU settings look right.
-3. Add the **Web Transport Transport** component to your `NetworkManager` object and assign it to the
-   `Transport` field.
+## Build instructions:
 
-If the library is missing, the transport inspector says so and `Available()` returns false. WebGL
-builds do not need it at all.
+Build the native library:
+
+```bash
+powershell -ExecutionPolicy Bypass -File Native~/build.ps1
+```
+
+```bash
+./Native~/build.sh
+```
+
+Both drop the result into `Runtime/Plugins/x86_64/`. Unity imports it on the next domain reload;
+check the Plugin Inspector once to confirm the platform and CPU settings look right.
 
 ## Development: self signed certificates
 
