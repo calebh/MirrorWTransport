@@ -53,7 +53,22 @@ pub struct ServerSettings {
     pub max_unreliable_payload: usize,
     /// 0 means unlimited.
     pub max_connections: u32,
+    /// Total validity of a generated self signed certificate. Clamped to two
+    /// weeks, which is as long as a pinned certificate is allowed to live.
+    pub certificate_validity_secs: u64,
+    /// How often to replace the certificate on a running server. 0 disables it.
+    pub certificate_rotation_secs: u64,
 }
+
+/// Both the browser and [`wtransport::tls::client::ServerHashVerification`]
+/// refuse to pin a certificate whose total validity period exceeds two weeks,
+/// so this is a hard ceiling rather than a preference.
+const MAX_SELF_SIGNED_VALIDITY_SECS: u64 = 14 * 24 * 60 * 60;
+
+/// How far back to date `notBefore`. A client whose clock trails the server
+/// would otherwise be told NotValidYet by a certificate generated a moment ago.
+/// Capped at a quarter of the validity so short lifetimes stay usable in tests.
+const MAX_BACKDATE_SECS: u64 = 60 * 60;
 
 struct ConnHandle {
     connection: Connection,
@@ -105,7 +120,8 @@ pub struct Server {
     events: EventReceiver,
     shutdown: watch::Sender<bool>,
     local_port: u16,
-    certificate_hash: Option<String>,
+    /// Shared with the rotation task, which replaces it in place.
+    certificate_hash: Arc<Mutex<Option<String>>>,
 }
 
 impl Server {
@@ -116,12 +132,15 @@ impl Server {
             .build()
             .map_err(|e| format!("failed to create the tokio runtime: {e}"))?;
 
-        let (identity, certificate_hash) = runtime.block_on(build_identity(&settings.identity))?;
+        let (identity, hash) = runtime.block_on(build_identity(&settings))?;
         let config = build_server_config(&settings, identity)?;
 
         // quinn binds its UDP socket through the ambient tokio runtime, so the
         // endpoint has to be created from inside the runtime context.
-        let endpoint = {
+        //
+        // Shared, because the rotation task swaps the TLS config on the very
+        // same endpoint the accept loop is running on.
+        let endpoint = Arc::new({
             let _guard = runtime.enter();
             Endpoint::server(config).map_err(|e| {
                 format!(
@@ -129,7 +148,7 @@ impl Server {
                     settings.port
                 )
             })?
-        };
+        });
 
         let local_port = endpoint
             .local_addr()
@@ -148,7 +167,28 @@ impl Server {
             settings,
         });
 
-        runtime.spawn(accept_loop(endpoint, ctx.clone(), shutdown_rx));
+        let certificate_hash = Arc::new(Mutex::new(hash));
+
+        runtime.spawn(accept_loop(
+            endpoint.clone(),
+            ctx.clone(),
+            shutdown_rx.clone(),
+        ));
+
+        if ctx.settings.certificate_rotation_secs > 0 {
+            runtime.spawn(rotation_loop(
+                endpoint,
+                ctx.clone(),
+                certificate_hash.clone(),
+                shutdown_rx,
+            ));
+        } else {
+            common::log_warn(
+                "certificate rotation is disabled: this server will stop accepting new connections \
+                 once its certificate expires, while existing ones keep running"
+                    .to_string(),
+            );
+        }
 
         Ok(Self {
             runtime,
@@ -164,8 +204,13 @@ impl Server {
         self.local_port
     }
 
-    pub fn certificate_hash(&self) -> Option<&str> {
-        self.certificate_hash.as_deref()
+    /// The hash currently being served. Changes when the rotation task installs
+    /// a new certificate, so read it fresh rather than caching it.
+    pub fn certificate_hash(&self) -> Option<String> {
+        self.certificate_hash
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     pub fn poll(&mut self) -> Option<Event> {
@@ -274,10 +319,31 @@ impl Server {
     }
 }
 
-async fn build_identity(source: &IdentitySource) -> Result<(Identity, Option<String>), String> {
-    match source {
+async fn build_identity(settings: &ServerSettings) -> Result<(Identity, Option<String>), String> {
+    match &settings.identity {
         IdentitySource::SelfSigned { subject_alt_names } => {
-            let identity = Identity::self_signed(subject_alt_names)
+            let validity = settings
+                .certificate_validity_secs
+                .clamp(60, MAX_SELF_SIGNED_VALIDITY_SECS);
+
+            if settings.certificate_validity_secs > MAX_SELF_SIGNED_VALIDITY_SECS {
+                common::log_warn(format!(
+                    "a certificate validity of {} s was clamped to {MAX_SELF_SIGNED_VALIDITY_SECS} s: \
+                     neither browsers nor the native client will pin a certificate that is valid \
+                     for longer than two weeks",
+                    settings.certificate_validity_secs
+                ));
+            }
+
+            let backdate = MAX_BACKDATE_SECS.min(validity / 4);
+            let not_before =
+                time::OffsetDateTime::now_utc() - time::Duration::seconds(backdate as i64);
+
+            let identity = Identity::self_signed_builder()
+                .subject_alt_names(subject_alt_names)
+                .not_before(not_before)
+                .offset_from_not_before(time::Duration::seconds(validity as i64))
+                .build()
                 .map_err(|e| format!("failed to generate a self signed certificate: {e}"))?;
 
             let hash = identity
@@ -344,7 +410,7 @@ fn build_server_config(
 }
 
 async fn accept_loop(
-    endpoint: Endpoint<endpoint_side::Server>,
+    endpoint: Arc<Endpoint<endpoint_side::Server>>,
     ctx: Arc<ServerCtx>,
     mut shutdown: watch::Receiver<bool>,
 ) {
@@ -370,6 +436,98 @@ async fn accept_loop(
     }
 
     endpoint.close(VarInt::from_u32(CLOSE_CODE_NORMAL), b"server shutting down");
+}
+
+/// Replaces the certificate periodically on a running server.
+///
+/// A pinned self signed certificate may only be valid for two weeks, and
+/// neither the server nor wtransport notices when its own certificate expires:
+/// existing sessions keep working (TLS validity is checked once, at handshake
+/// time) while every new handshake fails. A long lived server therefore has to
+/// swap the certificate out before that happens.
+///
+/// `reload_config` installs the new TLS config on the live endpoint, so nothing
+/// currently connected is disturbed.
+///
+/// In `PemFiles` mode this re-reads the files instead, which picks up a renewal
+/// performed by certbot or similar without restarting the server.
+async fn rotation_loop(
+    endpoint: Arc<Endpoint<endpoint_side::Server>>,
+    ctx: Arc<ServerCtx>,
+    certificate_hash: Arc<Mutex<Option<String>>>,
+    mut shutdown: watch::Receiver<bool>,
+) {
+    let interval = Duration::from_secs(ctx.settings.certificate_rotation_secs);
+
+    // Compare against the validity actually in force, not the requested one:
+    // a caller asking for a month gets two weeks, and rotating every three
+    // weeks would then leave a gap nobody asked for.
+    if matches!(ctx.settings.identity, IdentitySource::SelfSigned { .. }) {
+        let validity = ctx
+            .settings
+            .certificate_validity_secs
+            .clamp(60, MAX_SELF_SIGNED_VALIDITY_SECS);
+
+        if ctx.settings.certificate_rotation_secs >= validity {
+            common::log_warn(format!(
+                "certificate rotation every {} s is not more frequent than the {validity} s \
+                 validity, so the certificate will expire before it is replaced",
+                ctx.settings.certificate_rotation_secs
+            ));
+        }
+    }
+
+    loop {
+        tokio::select! {
+            _ = shutdown.changed() => return,
+            _ = tokio::time::sleep(interval) => {}
+        }
+
+        let (identity, hash) = match build_identity(&ctx.settings).await {
+            Ok(identity) => identity,
+            Err(e) => {
+                // Keep serving the certificate we already have; a failed
+                // rotation must not take the server down.
+                common::log_error(format!(
+                    "certificate rotation failed, keeping the current certificate: {e}"
+                ));
+                continue;
+            }
+        };
+
+        let config = match build_server_config(&ctx.settings, identity) {
+            Ok(config) => config,
+            Err(e) => {
+                common::log_error(format!(
+                    "certificate rotation failed, keeping the current certificate: {e}"
+                ));
+                continue;
+            }
+        };
+
+        // rebind: false, so the socket and every connection on it survive.
+        if let Err(e) = endpoint.reload_config(config, false) {
+            common::log_error(format!(
+                "could not install the rotated certificate, keeping the current one: {e}"
+            ));
+            continue;
+        }
+
+        *certificate_hash
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = hash.clone();
+
+        match &hash {
+            Some(hash) => common::log_info(format!(
+                "rotated the self signed certificate, new hash: {hash}"
+            )),
+            None => common::log_info("reloaded the certificate from disk".to_string()),
+        }
+
+        ctx.emit(Event::CertificateRotated {
+            hash: hash.unwrap_or_default(),
+        });
+    }
 }
 
 async fn handle_session(incoming: IncomingSession, ctx: Arc<ServerCtx>) {

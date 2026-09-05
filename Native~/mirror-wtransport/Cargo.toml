@@ -1,6 +1,6 @@
 [package]
 name = "mirror-wtransport"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.88"
 license = "MIT"
@@ -14,6 +14,10 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 wtransport = { version = "0.7.2", default-features = false, features = ["ring", "self-signed", "dangerous-configuration"] }
 tokio = { version = "1.28", default-features = false, features = ["rt-multi-thread", "sync", "time", "macros"] }
+# Needed to back-date notBefore and to set an explicit validity window on the
+# self signed certificate. Same major.minor as wtransport uses, so cargo
+# resolves both to one copy.
+time = "0.3.21"
 
 # NOTE: panic must stay "unwind". Every exported function wraps its body in
 # catch_unwind so a Rust panic surfaces as an error code instead of taking the

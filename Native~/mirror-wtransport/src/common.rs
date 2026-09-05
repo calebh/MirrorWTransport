@@ -57,6 +57,7 @@ pub mod event_kind {
     pub const DATA: i32 = 2;
     pub const DISCONNECTED: i32 = 3;
     pub const ERROR: i32 = 4;
+    pub const CERTIFICATE_ROTATED: i32 = 5;
 }
 
 /// Error codes as seen by C#. Keep in sync with `WTErrorCode`.
@@ -79,6 +80,10 @@ pub enum Event {
     Data { id: u32, channel: u8, payload: Vec<u8> },
     Disconnected { id: u32, code: i32, reason: String },
     Error { id: u32, code: i32, message: String },
+    /// The server installed a new certificate. `hash` is the new SHA-256 as
+    /// dotted hex, or empty when the identity came from PEM files and there is
+    /// nothing for a client to pin.
+    CertificateRotated { hash: String },
 }
 
 pub type EventSender = tokio::sync::mpsc::UnboundedSender<Event>;

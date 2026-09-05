@@ -11,7 +11,9 @@ namespace Mirror.WTransport
         Connected = 1,
         Data = 2,
         Disconnected = 3,
-        Error = 4
+        Error = 4,
+        /// <summary>The server installed a replacement certificate; the payload is the new hash.</summary>
+        CertificateRotated = 5
     }
 
     /// <summary>Native error codes, mapped 1:1 onto <see cref="TransportError"/>.</summary>
@@ -100,6 +102,8 @@ namespace Mirror.WTransport
         public uint maxReliablePayload;
         public uint maxUnreliablePayload;
         public uint maxConnections;
+        public uint certificateValiditySeconds;
+        public uint certificateRotationSeconds;
     }
 
     /// <summary>Client settings passed to the native library. Must match <c>MwtClientConfig</c>.</summary>

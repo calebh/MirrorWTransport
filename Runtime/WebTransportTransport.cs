@@ -27,6 +27,23 @@ namespace Mirror.WTransport
         /// <summary>WebTransport runs over HTTP/3, so the url scheme is always https.</summary>
         public const string Scheme = WTUtils.Scheme;
 
+        /// <summary>
+        /// Two weeks. A pinned certificate may not be valid for longer than this
+        /// on either the browser or the native client, so it is a hard ceiling.
+        /// </summary>
+        public const int MaxCertificateValidityMinutes = 14 * 24 * 60;
+
+        /// <summary>
+        /// Raised on the server when it installed a replacement certificate, with
+        /// the new SHA-256 hash (empty in PemFiles mode).
+        /// </summary>
+        /// <remarks>
+        /// A client that pins the hash cannot connect with a stale one, so
+        /// whatever hands the hash out - a master server, a lobby listing - has
+        /// to be told the new value from here, not just once at startup.
+        /// </remarks>
+        public Action<string> OnServerCertificateRotated;
+
         [Header("Server")]
         [Tooltip("UDP port the server listens on, and the default port clients connect to.")]
         [SerializeField] ushort serverPort = 7777;
@@ -54,6 +71,12 @@ namespace Mirror.WTransport
 
         [Tooltip("Maximum simultaneous connections. 0 means unlimited.")]
         public int maxConnections = 0;
+
+        [Tooltip("Total lifetime of a generated self signed certificate, in minutes. Capped at 20160 (14 days): neither browsers nor the native client will pin one that lives longer. Ignored in PemFiles mode.")]
+        public int certificateValidityMinutes = MaxCertificateValidityMinutes;
+
+        [Tooltip("How often a running server replaces its certificate, in minutes. 0 disables it, and the server then quietly stops accepting new connections once the certificate expires. In PemFiles mode this re-reads the files instead, so a renewal is picked up without a restart.")]
+        public int certificateRotationMinutes = 8 * 24 * 60;
 
         [Header("Client")]
         [Tooltip("Url path the client requests, and the path advertised by ServerUri. Useful when a reverse proxy routes several games through one host.")]
@@ -135,6 +158,18 @@ namespace Mirror.WTransport
             if (maxReceivesPerTick < 1) maxReceivesPerTick = 1;
             if (maxConnections < 0) maxConnections = 0;
 
+            if (certificateValidityMinutes < 1) certificateValidityMinutes = 1;
+            if (certificateValidityMinutes > MaxCertificateValidityMinutes)
+                certificateValidityMinutes = MaxCertificateValidityMinutes;
+
+            if (certificateRotationMinutes < 0) certificateRotationMinutes = 0;
+
+            // Rotate well before expiry, so a rotation that fails (unreadable
+            // PEM files, say) still has room for the next attempt to succeed.
+            int latestRotation = Math.Max(1, certificateValidityMinutes * 3 / 4);
+            if (certificateRotationMinutes > latestRotation)
+                certificateRotationMinutes = latestRotation;
+
             unreliableLookup = null;
             WTLog.verbose = debugLog;
         }
@@ -149,6 +184,8 @@ namespace Mirror.WTransport
             settings.keyPath = keyPath;
             settings.subjectAltNames = selfSignedSubjectAltNames;
             settings.maxConnections = maxConnections;
+            settings.certificateValiditySeconds = certificateValidityMinutes * 60;
+            settings.certificateRotationSeconds = certificateRotationMinutes * 60;
 
             settings.path = WTUtils.NormalizePath(path);
             settings.certificateHash = clientCertificateHash != null ? clientCertificateHash.Trim() : string.Empty;
@@ -394,7 +431,8 @@ namespace Mirror.WTransport
                 OnConnected = (connectionId, address) => OnServerConnectedWithAddress?.Invoke(connectionId, address),
                 OnData = (connectionId, segment, channelId) => OnServerDataReceived?.Invoke(connectionId, segment, channelId),
                 OnDisconnected = connectionId => OnServerDisconnected?.Invoke(connectionId),
-                OnError = (connectionId, error, reason) => OnServerError?.Invoke(connectionId, error, reason)
+                OnError = (connectionId, error, reason) => OnServerError?.Invoke(connectionId, error, reason),
+                OnCertificateRotated = hash => OnServerCertificateRotated?.Invoke(hash)
             };
 
             if (!server.Start()) server = null;

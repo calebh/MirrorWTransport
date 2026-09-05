@@ -17,6 +17,20 @@ namespace Mirror.WTransport
         public string subjectAltNames = "localhost,127.0.0.1,::1";
         public int maxConnections;
 
+        /// <summary>
+        /// Total validity of a generated self signed certificate. Two weeks is
+        /// the ceiling: neither browsers nor the native client will pin one that
+        /// lives longer.
+        /// </summary>
+        public int certificateValiditySeconds = 14 * 24 * 60 * 60;
+
+        /// <summary>
+        /// How often a running server replaces its certificate. 0 disables it,
+        /// which means the server stops accepting new connections once the
+        /// certificate expires.
+        /// </summary>
+        public int certificateRotationSeconds = 8 * 24 * 60 * 60;
+
         // client
         public string path = "/";
         /// <summary>Empty means the certificate is validated normally.</summary>

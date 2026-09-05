@@ -65,8 +65,9 @@ browser client and the native client accept it.
 
 Two things to keep in mind:
 
-* **The hash changes every time the server restarts.** For a client and server in the same editor
-  session that is fine; across machines you have to move the new hash over each time.
+* **The hash changes every time the server restarts**, and again every time the server rotates its
+  certificate while running. For a client and server in the same editor session that is fine; anything
+  else has to fetch the current hash rather than hold onto one.
 * Browsers only accept pinned hashes for certificates that are ECDSA P-256 and valid for at most two
   weeks. The generated certificate satisfies both; a certificate from your own CA usually will not.
 
@@ -116,6 +117,50 @@ private async void DoStartServer() {
     StartServer();
 }
 ```
+
+## Certificate lifetime and rotation
+
+A pinned certificate cannot outlive two weeks, so a server that runs longer than that has to replace
+its certificate while running. That is what `Certificate Rotation Minutes` does; it defaults to
+8 days against a 14 day lifetime.
+
+This matters more than it sounds, because of how the expiry fails. wtransport never inspects its own
+certificate: the server keeps presenting an expired one indefinitely, with no error and no log line.
+TLS validity is only checked during the handshake, so everyone already connected keeps playing while
+every new join silently fails. A server left running for three weeks looks perfectly healthy and
+quietly accepts nobody.
+
+Rotation swaps the TLS config on the live endpoint, so **existing connections are not disturbed** -
+nobody is kicked, nothing reconnects. What changes is the hash, which means whatever hands the hash
+out has to be told the new one:
+
+```csharp
+webTransport.OnServerCertificateRotated += hash =>
+{
+    // Same call your server already makes when it registers with the master server.
+    // A client that fetched the previous hash a moment ago will fail and retry.
+    PublishCertificateHash(hash);
+};
+```
+
+`ServerCertificateHash` always reports the certificate currently being served, so code that reads it
+per request rather than caching it at startup needs no changes at all.
+
+Two knobs, both under the Server header:
+
+* `Certificate Validity Minutes` - lifetime of each generated certificate. Capped at 20160 (14 days),
+  because neither browsers nor the native client will pin one that lives longer. `notBefore` is
+  back-dated by up to an hour so a client whose clock trails the server is not told NotValidYet.
+* `Certificate Rotation Minutes` - how often to replace it. 0 disables rotation, and the transport
+  warns at startup when you do. The inspector caps it at three quarters of the validity, so a
+  rotation that fails still leaves room for the next attempt.
+
+Set both low (say validity 10, rotation 5) if you want to watch a rotation happen rather than wait
+eight days for one.
+
+In `PemFiles` mode the same timer re-reads the two files instead of generating anything, which picks
+up a certbot renewal without restarting the server. A rotation that fails - files missing, half
+written, unreadable - is logged and the current certificate stays in service.
 
 ## Real certificates
 
@@ -209,6 +254,8 @@ busy server does not allocate per message.
 | `Bind Mode` | Which local addresses the server socket binds to |
 | `Certificate Mode` | `SelfSigned` for development, `PemFiles` for a real certificate |
 | `Max Connections` | 0 for unlimited; extra sessions are refused during the handshake |
+| `Certificate Validity Minutes` | Lifetime of each generated self signed certificate. Capped at 14 days |
+| `Certificate Rotation Minutes` | How often a running server replaces its certificate. 0 disables it |
 | `Path` | Url path requested by the client and advertised by `ServerUri` |
 | `Client Certificate Hash` | SHA-256 of the server certificate, for self signed development servers |
 | `Client Allow Invalid Certificates` | Native client only. Skips validation. Development only |
@@ -231,7 +278,8 @@ busy server does not allocate per message.
 * **Tail data on disconnect.** When either side disconnects, frames already queued locally are
   flushed first, but data still in flight on the network can be lost when the QUIC connection closes.
   This is normal for UDP based transports and matches how Mirror's KCP transport behaves.
-* **Certificate hash rotation.** Self signed hashes change on every server start, by design.
+* **Certificate hashes are not stable.** They change on every server start and on every rotation, by
+  design. Anything that publishes the hash has to republish it; see Certificate lifetime and rotation.
 * The native library is built for the host architecture by default. Pass `--target` /
   `-Target` to the build script to cross compile for a dedicated server platform.
 

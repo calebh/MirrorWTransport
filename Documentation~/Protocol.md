@@ -81,7 +81,26 @@ Datagrams are not fragmented, so the payload is bounded by the path MTU.
 Oversized datagrams fail to send (native) or are dropped (browser); oversized
 incoming datagrams are ignored rather than trusted.
 
-## 4. Shutdown
+## 4. Certificate rotation
+
+Nothing on the wire changes, but the server may swap its TLS identity while
+running. `Endpoint::reload_config(config, rebind: false)` installs a new
+certificate on the live endpoint: established sessions are untouched, because
+TLS validity is only evaluated during a handshake, and later handshakes pick up
+the new certificate.
+
+This exists because a pinned certificate may not be valid for longer than two
+weeks, and nothing detects the expiry on its own. wtransport never inspects its
+own certificate, so an expired server keeps serving happily while every new
+handshake is rejected by the client - `ServerHashVerification::verify_server_cert`
+returns `CertificateError::Expired` before it even compares the hash, and
+browsers apply the same rule.
+
+The rotation task lives in `server.rs`, runs on the server runtime, and emits a
+`CertificateRotated` event carrying the new hash. A rotation that fails leaves
+the current certificate installed and logs the reason.
+
+## 5. Shutdown
 
 A local disconnect is queued through the reliable writer as a `Close` marker, so
 frames already queued are written before the session closes. Data still in
@@ -97,7 +116,7 @@ Both ends report a disconnect exactly once:
 * Browser: `MWT.Close` is idempotent and nulls `MWT.transport`, and the `closed`
   promise handler only fires for the session that is still current.
 
-## 5. FFI contract
+## 6. FFI contract
 
 Everything is polling based and copy-on-read. No pointer handed to C# outlives
 the call that produced it, so C# never frees anything the native side allocated.
@@ -129,10 +148,17 @@ int32_t  mwt_client_send(int32_t channel, int32_t reliable,
 ```
 
 `*_poll` returns 1 when it wrote an event and 0 when the queue was empty. The
-payload, the peer address, the disconnect reason and the error message all come
-back through the same `buffer`, with `MwtEvent.data_length` saying how many bytes
-were written. Strings are UTF-8 and are truncated on a character boundary rather
-than mid-sequence.
+payload, the peer address, the disconnect reason, the error message and the
+rotated certificate hash all come back through the same `buffer`, with
+`MwtEvent.data_length` saying how many bytes were written.
+
+Strings are UTF-8 and are truncated on a character boundary rather than
+mid-sequence.
+
+Event kinds are 0 none, 1 connected, 2 data, 3 disconnected, 4 error and
+5 certificate rotated. Kind 5 is server only and carries the new hash as dotted
+hex, or nothing at all when the identity came from PEM files and there is no
+hash for a client to pin.
 
 `mwt_poll_log` drains the log lines that background threads produced, because
 those threads cannot call into Unity.
@@ -146,9 +172,11 @@ targets, and matches the `[StructLayout(LayoutKind.Sequential)]` structs in
 `Runtime/Common/WTTypes.cs`.
 
 `ABI_VERSION` guards the whole thing: C# refuses to use a library that reports a
-different number. Bump it whenever anything above changes.
+different number. Bump it whenever anything above changes. It is currently 2;
+version 1 predates certificate rotation and the two `certificate_*_secs` fields
+that `MwtServerConfig` gained for it.
 
-## 6. Browser plugin contract
+## 7. Browser plugin contract
 
 ```js
 MirrorWT_IsSupported()                        -> 0 | 1

@@ -24,7 +24,7 @@ use crate::server::ServerSettings;
 
 /// Bumped whenever the ABI below changes. C# refuses to run against a native
 /// library that does not report the version it was built for.
-pub const ABI_VERSION: u32 = 1;
+pub const ABI_VERSION: u32 = 2;
 
 static SERVER: Mutex<Option<Server>> = Mutex::new(None);
 static CLIENT: Mutex<Option<Client>> = Mutex::new(None);
@@ -62,6 +62,11 @@ pub struct MwtServerConfig {
     pub max_unreliable_payload: u32,
     /// 0 means unlimited.
     pub max_connections: u32,
+    /// Total validity of a generated self signed certificate, in seconds.
+    pub certificate_validity_secs: u32,
+    /// How often to replace the certificate on a running server, in seconds.
+    /// 0 disables rotation.
+    pub certificate_rotation_secs: u32,
 }
 
 /// Keep the layout in sync with `WTClientConfig`.
@@ -207,6 +212,10 @@ unsafe fn write_event(
             result.code = code;
             result.data_length = unsafe { write_string(&message, buffer, capacity) };
         }
+        Event::CertificateRotated { hash } => {
+            result.kind = event_kind::CERTIFICATE_ROTATED;
+            result.data_length = unsafe { write_string(&hash, buffer, capacity) };
+        }
     }
 
     if out.is_null() {
@@ -323,6 +332,8 @@ pub unsafe extern "C" fn mwt_server_start(config: *const MwtServerConfig) -> i32
             max_reliable_payload: config.max_reliable_payload as usize,
             max_unreliable_payload: config.max_unreliable_payload as usize,
             max_connections: config.max_connections,
+            certificate_validity_secs: config.certificate_validity_secs as u64,
+            certificate_rotation_secs: config.certificate_rotation_secs as u64,
         };
 
         let mut slot = SERVER.lock().unwrap_or_else(|e| e.into_inner());
@@ -401,7 +412,7 @@ pub unsafe extern "C" fn mwt_server_certificate_hash(buffer: *mut u8, capacity: 
     guard(-1, || {
         let slot = SERVER.lock().unwrap_or_else(|e| e.into_inner());
         match slot.as_ref().and_then(|server| server.certificate_hash()) {
-            Some(hash) => unsafe { write_string(hash, buffer, capacity) },
+            Some(hash) => unsafe { write_string(&hash, buffer, capacity) },
             None => -1,
         }
     })

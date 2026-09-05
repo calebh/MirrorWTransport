@@ -17,7 +17,7 @@ namespace Mirror.WTransport
         public const string Library = "mirror_wtransport";
 
         /// <summary>Must match <c>ABI_VERSION</c> in ffi.rs.</summary>
-        public const uint ExpectedAbiVersion = 1;
+        public const uint ExpectedAbiVersion = 2;
 
         // Scratch buffer for the strings the native side hands back (addresses,
         // error messages, log lines). Only ever touched from the main thread.

@@ -14,12 +14,22 @@ namespace Mirror.WTransport
         public Action<int> OnDisconnected;
         public Action<int, TransportError, string> OnError;
 
+        /// <summary>
+        /// Raised when the server replaced its certificate, with the new hash
+        /// (empty in PemFiles mode). Clients that pin the hash need to be told
+        /// the new one, so republish it from here.
+        /// </summary>
+        public Action<string> OnCertificateRotated;
+
         readonly WTSettings settings;
         readonly byte[] receiveBuffer;
 
         public bool Active { get; private set; }
 
-        /// <summary>Dotted hex SHA-256 of the self signed certificate, or empty.</summary>
+        /// <summary>
+        /// Dotted hex SHA-256 of the certificate currently being served, or
+        /// empty. Updated in place when the server rotates the certificate.
+        /// </summary>
         public string CertificateHash { get; private set; } = string.Empty;
 
         /// <summary>The UDP port actually bound, which differs from the requested one when it was 0.</summary>
@@ -77,7 +87,9 @@ namespace Mirror.WTransport
                     handshakeTimeoutMs = (uint)Math.Max(1000, settings.handshakeTimeoutMs),
                     maxReliablePayload = settings.NativeReliableLimit,
                     maxUnreliablePayload = settings.NativeUnreliableLimit,
-                    maxConnections = (uint)Math.Max(0, settings.maxConnections)
+                    maxConnections = (uint)Math.Max(0, settings.maxConnections),
+                    certificateValiditySeconds = (uint)Math.Max(60, settings.certificateValiditySeconds),
+                    certificateRotationSeconds = (uint)Math.Max(0, settings.certificateRotationSeconds)
                 };
 
                 if (WTNative.mwt_server_start(ref config) != 0)
@@ -211,6 +223,20 @@ namespace Mirror.WTransport
                 {
                     string message = WTUtils.ReadUtf8(receiveBuffer, evt.dataLength);
                     OnError?.Invoke(connectionId, WTUtils.ToTransportError(evt.code), message);
+                    break;
+                }
+                case WTEventKind.CertificateRotated:
+                {
+                    CertificateHash = WTUtils.ReadUtf8(receiveBuffer, evt.dataLength);
+
+                    // Logged unconditionally: every client that pins the hash
+                    // needs the new value, so this must not be easy to miss.
+                    UnityEngine.Debug.Log(string.IsNullOrEmpty(CertificateHash)
+                        ? "[WebTransport] reloaded the server certificate from disk"
+                        : "[WebTransport] rotated the server certificate.\n" +
+                          $"new serverCertificateHashes value for browser clients:\n{CertificateHash}");
+
+                    OnCertificateRotated?.Invoke(CertificateHash);
                     break;
                 }
             }
