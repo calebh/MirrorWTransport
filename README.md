@@ -30,9 +30,11 @@ Open the package manager and install using this GitHub's URL:
 https://github.com/calebh/MirrorWTransport.git
 ```
 
-Add the **Web Transport Transport** component to your `NetworkManager` object and assign it to the `Transport` field.
+Add the **Web Transport Transport** component to your `NetworkManager` object and assign it to the `Transport` field. If using a project with multiple transports, use the Multiplex Transport available in Mirror.
 
 ## Build instructions:
+
+Clone the project into a local directory.
 
 Build the native library:
 
@@ -46,6 +48,8 @@ powershell -ExecutionPolicy Bypass -File Native~/build.ps1
 
 Both drop the result into `Runtime/Plugins/x86_64/`. Unity imports it on the next domain reload;
 check the Plugin Inspector once to confirm the platform and CPU settings look right.
+
+Now do a local install the Unity package manager.
 
 ## Development: self signed certificates
 
