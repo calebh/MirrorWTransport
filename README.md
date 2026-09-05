@@ -204,11 +204,19 @@ by path; the server itself accepts any path and logs the one it was given.
 | Reliable | one bidirectional QUIC stream per connection | yes | yes | `Reliable Max Message Size` (64 KB by default) |
 | Unreliable | QUIC datagrams | no | no | `Unreliable Max Message Size` (1 KB by default) |
 
-`Unreliable Channels` lists the Mirror channel ids that go out as datagrams; everything else uses the
-reliable stream. It defaults to `{ 1 }`, which is Mirror's `Channels.Unreliable`. If your project
-defines extra channels — this Mirror build also has `MapUnreliable` (2), `DissonanceReliable` (3) and
-`DissonanceUnreliable` (4) — add the ones that should be droppable, for example `{ 1, 4 }` to send
-voice as datagrams.
+The `Channels` list says how each channel is delivered. It is a plain list of Reliable/Unreliable
+values indexed by channel id: element 0 is channel 0, element 1 is channel 1, and so on. Mirror
+defines exactly two channels, `Channels.Reliable` (0) and `Channels.Unreliable` (1), and the two
+defaults match them, so most projects never touch this.
+
+Element 0 has to stay Reliable. Mirror sends spawn, scene and ownership messages on channel 0, so
+making it a datagram does not merely slow the game down, it breaks it. The inspector shows an error
+if you do, and the transport logs one at startup.
+
+Channel ids past the end of the list are delivered reliably. That may be slower than you intended,
+but it is never wrong; defaulting the other way would silently drop messages on a channel nobody had
+configured. So a project that adds a channel of its own gets working-but-reliable delivery until it
+adds a matching row, rather than a puzzle.
 
 The channel id travels on the wire and is handed back to Mirror unchanged, so message handlers see
 the channel they were actually sent on.
@@ -263,7 +271,7 @@ busy server does not allocate per message.
 | `Client Certificate Hash` | SHA-256 of the server certificate, for self signed development servers |
 | `Client Allow Invalid Certificates` | Native client only. Skips validation. Development only |
 | `Connect Timeout Ms` | How long the client waits for the session and handshake |
-| `Unreliable Channels` | Channel ids delivered as datagrams |
+| `Channels` | Delivery per channel, indexed by channel id. Element 0 must be Reliable |
 | `Reliable Max Message Size` | Largest message accepted on a reliable channel |
 | `Unreliable Max Message Size` | Largest message accepted on an unreliable channel |
 | `Reliable Batch Threshold` | How much Mirror batches before starting a new reliable message |

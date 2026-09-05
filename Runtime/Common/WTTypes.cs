@@ -31,6 +31,22 @@ namespace Mirror.WTransport
         Unexpected = 8
     }
 
+    /// <summary>How a Mirror channel is carried over the WebTransport session.</summary>
+    public enum WTDelivery
+    {
+        /// <summary>
+        /// Ordered and guaranteed, over the connection's single bidirectional
+        /// stream. Mirror requires this for <see cref="Channels.Reliable"/>.
+        /// </summary>
+        Reliable = 0,
+
+        /// <summary>
+        /// A WebTransport datagram: unordered, droppable, and bounded by the
+        /// path MTU rather than by the reliable message size.
+        /// </summary>
+        Unreliable = 1
+    }
+
     /// <summary>Severity of a log line queued by a background thread.</summary>
     public enum WTLogLevel
     {

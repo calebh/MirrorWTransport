@@ -34,6 +34,11 @@ namespace Mirror.WTransport
         public const int MaxCertificateValidityMinutes = 14 * 24 * 60;
 
         /// <summary>
+        /// Channel ids are carried in a single byte on the wire, so 0..255.
+        /// </summary>
+        public const int MaxChannels = 256;
+
+        /// <summary>
         /// Raised on the server when it installed a replacement certificate, with
         /// the new SHA-256 hash (empty in PemFiles mode).
         /// </summary>
@@ -92,8 +97,8 @@ namespace Mirror.WTransport
         public int connectTimeoutMs = 10000;
 
         [Header("Channels")]
-        [Tooltip("Channel ids delivered as WebTransport datagrams: unordered, size limited, and droppable. Every other channel id travels over the reliable ordered stream. Mirror's defaults are 0 = Reliable and 1 = Unreliable.")]
-        public int[] unreliableChannels = { Channels.Unreliable };
+        [Tooltip("How each Mirror channel is delivered. The list is indexed by channel id: element 0 is channel 0, element 1 is channel 1, and so on. Mirror only defines two channels, Reliable (0) and Unreliable (1), so the two defaults here are all most projects need. Element 0 has to stay Reliable. Channel ids past the end of the list are delivered reliably.")]
+        public WTDelivery[] channels = { WTDelivery.Reliable, WTDelivery.Unreliable };
 
         [Header("Limits")]
         [Tooltip("Largest message accepted on a reliable channel, in bytes.")]
@@ -129,9 +134,6 @@ namespace Mirror.WTransport
         WTServer server;
         WTClient client;
 
-        /// <summary>Lookup built from unreliableChannels, indexed by channel id.</summary>
-        bool[] unreliableLookup;
-
         /// <summary>
         /// SHA-256 hash of the certificate the running server generated, as
         /// dotted hex. Empty unless the server is running in SelfSigned mode.
@@ -144,6 +146,7 @@ namespace Mirror.WTransport
         {
             WTLog.verbose = debugLog;
             ApplySettings();
+            WarnAboutChannelSetup();
             WTLog.Info("WebTransport transport initialised");
         }
 
@@ -170,7 +173,11 @@ namespace Mirror.WTransport
             if (certificateRotationMinutes > latestRotation)
                 certificateRotationMinutes = latestRotation;
 
-            unreliableLookup = null;
+            // Channel ids travel as a single byte on the wire, so the list
+            // cannot describe more channels than that.
+            if (channels != null && channels.Length > MaxChannels)
+                Array.Resize(ref channels, MaxChannels);
+
             WTLog.verbose = debugLog;
         }
 
@@ -206,48 +213,44 @@ namespace Mirror.WTransport
         // channels ////////////////////////////////////////////////////////////
 
         /// <summary>
-        /// True when the channel is delivered over the reliable ordered stream,
-        /// false when it is delivered as a datagram.
+        /// How the given Mirror channel is delivered. The channels list is
+        /// indexed by channel id; ids past its end fall back to reliable, which
+        /// may be slower than intended but is never wrong. Defaulting the other
+        /// way would silently drop messages on a channel nobody configured.
         /// </summary>
-        public bool IsReliableChannel(int channelId)
+        public WTDelivery DeliveryFor(int channelId)
         {
-            if (unreliableLookup == null) RebuildChannelLookup();
+            if (channels != null && channelId >= 0 && channelId < channels.Length)
+                return channels[channelId];
 
-            if (channelId < 0 || channelId >= unreliableLookup.Length) return true;
-            return !unreliableLookup[channelId];
+            return WTDelivery.Reliable;
         }
 
-        void RebuildChannelLookup()
+        /// <summary>
+        /// True when the channel travels over the reliable ordered stream, false
+        /// when it travels as a datagram.
+        /// </summary>
+        public bool IsReliableChannel(int channelId) => DeliveryFor(channelId) == WTDelivery.Reliable;
+
+        /// <summary>
+        /// Mirror sends spawn, scene and ownership messages on
+        /// <see cref="Channels.Reliable"/>. Delivering those as datagrams does
+        /// not degrade the game, it breaks it, so say so rather than letting it
+        /// look like random desync later.
+        /// </summary>
+        public bool ReliableChannelMisconfigured =>
+            DeliveryFor(Channels.Reliable) != WTDelivery.Reliable;
+
+        void WarnAboutChannelSetup()
         {
-            int highest = 0;
-            if (unreliableChannels != null)
-            {
-                foreach (int channelId in unreliableChannels)
-                    if (channelId > highest) highest = channelId;
-            }
-
-            unreliableLookup = new bool[highest + 1];
-
-            if (unreliableChannels != null)
-            {
-                foreach (int channelId in unreliableChannels)
-                {
-                    // Channel ids travel as a single byte on the wire.
-                    if (channelId < 0 || channelId > byte.MaxValue)
-                    {
-                        WTLog.Error($"channel id {channelId} is out of the supported range 0..255 and was ignored");
-                        continue;
-                    }
-
-                    unreliableLookup[channelId] = true;
-                }
-            }
+            if (ReliableChannelMisconfigured)
+                WTLog.Error($"channel {Channels.Reliable} is set to Unreliable, but Mirror sends spawn and scene messages on it. Set it to Reliable.");
         }
 
         bool ValidateChannel(int channelId)
         {
-            if (channelId >= 0 && channelId <= byte.MaxValue) return true;
-            WTLog.Error($"channel id {channelId} is out of the supported range 0..255");
+            if (channelId >= 0 && channelId < MaxChannels) return true;
+            WTLog.Error($"channel id {channelId} is out of the supported range 0..{MaxChannels - 1}");
             return false;
         }
 

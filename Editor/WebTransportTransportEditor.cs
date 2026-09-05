@@ -5,8 +5,9 @@ namespace Mirror.WTransport.EditorScripts
 {
     /// <summary>
     /// Adds the bits of context the default inspector cannot show: whether the
-    /// native library is actually loadable, and the certificate hash a browser
-    /// needs in order to talk to a development server.
+    /// channel list is safe, whether the native library is actually loadable,
+    /// and the certificate hash a browser needs in order to talk to a
+    /// development server.
     /// </summary>
     [CustomEditor(typeof(WebTransportTransport))]
     public class WebTransportTransportEditor : Editor
@@ -19,8 +20,24 @@ namespace Mirror.WTransport.EditorScripts
 
             EditorGUILayout.Space();
 
+            DrawChannelValidation(transport);
             DrawNativeLibraryStatus();
             DrawCertificateHelp(transport);
+        }
+
+        /// <summary>
+        /// The one channel setting that is never a trade-off. Everything else in
+        /// the list is a judgement call the default array drawer handles fine.
+        /// </summary>
+        void DrawChannelValidation(WebTransportTransport transport)
+        {
+            if (!transport.ReliableChannelMisconfigured) return;
+
+            EditorGUILayout.HelpBox(
+                $"Channel {Channels.Reliable} is set to Unreliable. Mirror sends spawn, scene and " +
+                "ownership messages on it, so this does not just make the game slower, it breaks it. " +
+                "The first entry in Channels has to be Reliable.",
+                MessageType.Error);
         }
 
         void DrawNativeLibraryStatus()
