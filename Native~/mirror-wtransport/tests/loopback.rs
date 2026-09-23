@@ -17,7 +17,10 @@ use harness::*;
 
 #[test]
 fn client_and_server_talk_over_loopback() {
-    assert_eq!(mwt_abi_version(), 1);
+    // Pinned as a literal on purpose: the C# side refuses a library whose ABI
+    // does not match, so bumping this should be a deliberate act. 2 added
+    // certificate rotation.
+    assert_eq!(mwt_abi_version(), 2);
 
     let mut server_events: Vec<Captured> = Vec::new();
     let mut client_events: Vec<Captured> = Vec::new();

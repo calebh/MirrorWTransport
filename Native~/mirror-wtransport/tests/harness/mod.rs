@@ -146,6 +146,10 @@ pub fn start_self_signed_server() -> (i32, String) {
         max_reliable_payload: 65536 + 64,
         max_unreliable_payload: 1024 + 64,
         max_connections: 0,
+        certificate_validity_secs: 14 * 24 * 60 * 60,
+        // Rotation off: a test never runs long enough to need it, and the
+        // rotation task would only add a timer to the runtime.
+        certificate_rotation_secs: 0,
     };
 
     assert_eq!(

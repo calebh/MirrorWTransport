@@ -43,27 +43,38 @@ $outDir = if ($Target -ne "") {
     Join-Path $crate "target/$profileName"
 }
 
-# One of these exists depending on the host or the requested target.
-$candidates = @(
-    "mirror_wtransport.dll",
-    "libmirror_wtransport.so",
-    "libmirror_wtransport.dylib"
-)
+# Only the artifact this invocation actually produces gets published. Copying
+# whatever happens to be lying in the output directory silently republishes
+# stale libraries: a Linux build run from WSL writes its .so into the very same
+# target/release as a Windows build, and it would otherwise be copied out again
+# long after it stopped matching the source.
+$expected = if ($Target -ne "") {
+    if ($Target -match "windows") { "mirror_wtransport.dll" }
+    elseif ($Target -match "apple|darwin") { "libmirror_wtransport.dylib" }
+    else { "libmirror_wtransport.so" }
+}
+elseif ($PSVersionTable.PSVersion.Major -lt 6 -or $IsWindows) { "mirror_wtransport.dll" }
+elseif ($IsMacOS) { "libmirror_wtransport.dylib" }
+else { "libmirror_wtransport.so" }
 
-New-Item -ItemType Directory -Force $plugins | Out-Null
-
-$copied = $false
-foreach ($name in $candidates) {
-    $built = Join-Path $outDir $name
-    if (Test-Path $built) {
-        Copy-Item $built (Join-Path $plugins $name) -Force
-        Write-Host "copied $name to Runtime/Plugins/x86_64"
-        $copied = $true
-    }
+$built = Join-Path $outDir $expected
+if (-not (Test-Path $built)) {
+    throw "cargo reported success but $expected is not in $outDir"
 }
 
-if (-not $copied) {
-    throw "no library was produced in $outDir"
+New-Item -ItemType Directory -Force $plugins | Out-Null
+Copy-Item $built (Join-Path $plugins $expected) -Force
+Write-Host "copied $expected to Runtime/Plugins/x86_64"
+
+# Point out the other platforms' libraries when they have fallen behind, since
+# nothing else will notice until a dedicated server build fails the ABI check.
+foreach ($other in @("mirror_wtransport.dll", "libmirror_wtransport.so", "libmirror_wtransport.dylib")) {
+    if ($other -eq $expected) { continue }
+
+    $published = Join-Path $plugins $other
+    if ((Test-Path $published) -and (Get-Item $published).LastWriteTime -lt (Get-Item $built).LastWriteTime) {
+        Write-Warning "$other in Runtime/Plugins/x86_64 is older than the library just built. Rebuild it for that platform before shipping."
+    }
 }
 
 Write-Host "done. Unity will import it on the next domain reload."

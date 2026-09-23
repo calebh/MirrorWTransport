@@ -12,7 +12,15 @@ name = "mirror_wtransport"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-wtransport = { version = "0.7.2", default-features = false, features = ["ring", "self-signed", "dangerous-configuration"] }
+# aws-lc-rs rather than the default ring: it is AWS's BoringSSL derivative and
+# carries better hand-written assembly for AES-GCM on x86-64 and aarch64, which
+# is what a server's bulk traffic spends its crypto budget on. wtransport picks
+# the provider purely from this feature, so nothing in our code changes.
+#
+# It does cost more at BUILD time than ring: aws-lc-sys compiles C, so the
+# machine needs CMake and a C compiler, plus NASM on Windows x86-64. Swap this
+# back to "ring" for a pure-Rust build with no native prerequisites.
+wtransport = { version = "0.7.2", default-features = false, features = ["aws-lc-rs", "self-signed", "dangerous-configuration"] }
 tokio = { version = "1.28", default-features = false, features = ["rt-multi-thread", "sync", "time", "macros"] }
 # Needed to back-date notBefore and to set an explicit validity window on the
 # self signed certificate. Same major.minor as wtransport uses, so cargo

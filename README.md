@@ -20,6 +20,9 @@ and a browser client can sit in the same game.
 * Unity 2021.3 or newer.
 * Mirror (developed against 96.0.1).
 * A [Rust toolchain](https://rustup.rs) to build the native library. Rust 1.88 or newer.
+* CMake and a C compiler, because the crypto backend (`aws-lc-rs`) builds C. On Windows the
+  assembly ships pre-assembled, so NASM is not needed; on Linux and macOS the usual build-essential
+  / Xcode command line tools cover it. See Build instructions if you would rather avoid this.
 * A browser with WebTransport. Check the compatibility tables available online for more info.
 
 ## Installation
@@ -48,6 +51,27 @@ powershell -ExecutionPolicy Bypass -File Native~/build.ps1
 
 Both drop the result into `Runtime/Plugins/x86_64/`. Unity imports it on the next domain reload;
 check the Plugin Inspector once to confirm the platform and CPU settings look right.
+
+Each run publishes only the library for the platform it just built, and warns when another
+platform's library in that folder has fallen behind. A Windows build and a WSL or container build
+share one `target/release`, so publishing everything found there would quietly ship a stale library
+to the platform you did not just build.
+
+### Crypto backend
+
+The native library uses `aws-lc-rs` (AWS's BoringSSL derivative) for TLS, which carries better
+hand-written assembly for AES-GCM than the pure-Rust alternative. The cost is at build time: it
+compiles C, so the machine needs CMake and a C compiler, and cross compiling needs a C cross
+toolchain for the target rather than just `rustup target add`.
+
+If that is inconvenient - a CI image without CMake, or cross compiling a Linux server from Windows -
+switch the feature in `Native~/mirror-wtransport/Cargo.toml` back to the pure-Rust backend:
+
+```toml
+wtransport = { version = "0.7.2", default-features = false, features = ["ring", "self-signed", "dangerous-configuration"] }
+```
+
+Nothing in the transport changes; wtransport selects the provider entirely from that feature.
 
 Now do a local install the Unity package manager.
 
