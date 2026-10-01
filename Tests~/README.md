@@ -15,6 +15,17 @@ awkward chunk boundaries, buffer growth and compaction, the event queue, the
 heap writes `MirrorWT_Poll` performs, and certificate hash parsing. Needs
 Node 18 or newer, and nothing else.
 
+```bash
+node Tests~/jslib-lifecycle.test.js
+```
+
+Drives the plugin against a scripted fake `WebTransport` whose promises the
+test settles by hand, in the late and out-of-order sequences a slow mobile
+browser produces: reconnecting with a disconnect still queued, `Disconnect`
+when `closed` never settles, reads, writes and `closed` from an old session
+settling after a new one has started, and the receive-queue and pending-send
+caps.
+
 ## Native library
 
 ```bash

@@ -46,6 +46,18 @@ var MirrorWTransportLibrary = {
         maxUnreliablePayload: 1024,
         events: [],
 
+        // Bytes waiting in `events` for C# to poll. Capped so a paused game
+        // loop (hidden tab, backgrounded mobile browser) cannot let the
+        // network fill JS memory without bound.
+        queuedBytes: 0,
+        MAX_QUEUED_BYTES: 16 * 1024 * 1024,
+
+        // Reliable bytes handed to the stream but not yet accepted by it.
+        // Capped for the same reason on the sending side: a stalled uplink
+        // would otherwise buffer every frame Mirror sends.
+        pendingSendBytes: 0,
+        MAX_PENDING_SEND_BYTES: 4 * 1024 * 1024,
+
         // Incoming reliable bytes, reassembled into frames.
         buffer: null,
         bufferStart: 0,
@@ -56,6 +68,12 @@ var MirrorWTransportLibrary = {
         // -----------------------------------------------------------------
 
         Reset: function () {
+            // A previous session that never reported its end must not live on.
+            var previous = MWT.transport;
+            if (previous) {
+                try { previous.close(); } catch (e) { /* already closing */ }
+            }
+
             MWT.transport = null;
             MWT.state = MWT.STATE_DISCONNECTED;
             MWT.datagramWriter = null;
@@ -64,6 +82,14 @@ var MirrorWTransportLibrary = {
             MWT.buffer = new Uint8Array(16384);
             MWT.bufferStart = 0;
             MWT.bufferEnd = 0;
+            MWT.pendingSendBytes = 0;
+
+            // Anything still queued belongs to an earlier session. C# stops
+            // polling once it considers itself disconnected, so a leftover
+            // DISCONNECTED event would otherwise be read as the first event of
+            // the next connection and end it immediately.
+            MWT.events = [];
+            MWT.queuedBytes = 0;
         },
 
         Encode: function (text) {
@@ -72,6 +98,19 @@ var MirrorWTransportLibrary = {
 
         Push: function (event) {
             MWT.events.push(event);
+            if (event.data) MWT.queuedBytes += event.data.length;
+        },
+
+        // Queues received data, or ends the session if C# has fallen too far
+        // behind to ever catch up.
+        PushData: function (channel, data) {
+            if (MWT.queuedBytes + data.length > MWT.MAX_QUEUED_BYTES) {
+                MWT.Fail(MWT.ERROR_UNEXPECTED,
+                    "more than " + MWT.MAX_QUEUED_BYTES + " bytes arrived without being processed " +
+                    "(was the page hidden or the game loop paused?)");
+                return;
+            }
+            MWT.Push({ kind: MWT.KIND_DATA, channel: channel, code: 0, data: data });
         },
 
         PushError: function (code, message) {
@@ -200,12 +239,8 @@ var MirrorWTransportLibrary = {
 
                 // Empty frames carry nothing Mirror can parse.
                 if (length > 0) {
-                    MWT.Push({
-                        kind: MWT.KIND_DATA,
-                        channel: channel,
-                        code: 0,
-                        data: MWT.buffer.slice(from, from + length)
-                    });
+                    MWT.PushData(channel, MWT.buffer.slice(from, from + length));
+                    if (MWT.state === MWT.STATE_DISCONNECTED) return;
                 }
             }
 
@@ -220,44 +255,51 @@ var MirrorWTransportLibrary = {
             }
         },
 
-        ReadReliable: function (reader) {
+        // Every async callback below captures the session it was started for
+        // and gives up once that is no longer MWT.transport. Without this, a
+        // read or write from an old session that settles late (common on
+        // Android, where teardown is slower) would close the *new* session or
+        // feed it stale bytes. MWT.Close nulls MWT.transport, so this also
+        // covers "the session was closed in the meantime".
+        IsCurrent: function (transport) {
+            return transport !== null && MWT.transport === transport;
+        },
+
+        ReadReliable: function (transport, reader) {
             function step() {
                 return reader.read().then(function (result) {
+                    if (!MWT.IsCurrent(transport)) return;
                     if (result.done) {
                         MWT.Close(MWT.ERROR_CONNECTION_CLOSED, "the server closed the reliable stream");
                         return;
                     }
-                    if (MWT.state === MWT.STATE_DISCONNECTED) return;
 
                     MWT.Append(result.value);
                     MWT.Parse();
 
-                    if (MWT.state === MWT.STATE_DISCONNECTED) return;
+                    if (!MWT.IsCurrent(transport)) return;
                     return step();
                 });
             }
 
             step().catch(function (e) {
+                if (!MWT.IsCurrent(transport)) return;
                 MWT.Close(MWT.ERROR_CONNECTION_CLOSED, "reliable stream ended: " + e);
             });
         },
 
-        ReadDatagrams: function (reader) {
+        ReadDatagrams: function (transport, reader) {
             function step() {
                 return reader.read().then(function (result) {
                     if (result.done) return;
-                    if (MWT.state === MWT.STATE_DISCONNECTED) return;
+                    if (!MWT.IsCurrent(transport)) return;
 
                     var value = result.value;
                     if (value && value.length > 0) {
                         var length = value.length - 1;
                         if (length <= MWT.maxUnreliablePayload) {
-                            MWT.Push({
-                                kind: MWT.KIND_DATA,
-                                channel: value[0],
-                                code: 0,
-                                data: value.slice(1)
-                            });
+                            MWT.PushData(value[0], value.slice(1));
+                            if (!MWT.IsCurrent(transport)) return;
                         }
                     }
 
@@ -288,17 +330,18 @@ var MirrorWTransportLibrary = {
             }
 
             transport.createBidirectionalStream().then(function (stream) {
-                if (MWT.transport !== transport) return;
+                if (!MWT.IsCurrent(transport)) return;
 
                 MWT.reliableWriter = stream.writable.getWriter();
 
                 // The stream only reaches the server once something is written
                 // on it, so the prologue doubles as the "here I am" signal.
                 return MWT.reliableWriter.write(new Uint8Array(MWT.PROLOGUE)).then(function () {
-                    if (MWT.transport !== transport) return;
-                    MWT.ReadReliable(stream.readable.getReader());
+                    if (!MWT.IsCurrent(transport)) return;
+                    MWT.ReadReliable(transport, stream.readable.getReader());
                 });
             }).catch(function (e) {
+                if (!MWT.IsCurrent(transport)) return;
                 MWT.Fail(MWT.ERROR_CONNECTION_CLOSED, "could not open the reliable stream: " + e);
             });
         },
@@ -312,7 +355,7 @@ var MirrorWTransportLibrary = {
             // Started only now, so a datagram cannot be surfaced before the
             // connect event that Mirror needs to see first.
             try {
-                MWT.ReadDatagrams(MWT.transport.datagrams.readable.getReader());
+                MWT.ReadDatagrams(MWT.transport, MWT.transport.datagrams.readable.getReader());
             } catch (e) {
                 console.warn("[MirrorWTransport] datagrams are unavailable: " + e);
             }
@@ -409,17 +452,12 @@ var MirrorWTransportLibrary = {
     MirrorWT_Disconnect: function () {
         if (MWT.state === MWT.STATE_DISCONNECTED) return;
 
-        if (MWT.transport) {
-            // Let the closed promise raise the disconnect, so a local close and
-            // a remote one take the same path.
-            try {
-                MWT.transport.close();
-                return;
-            } catch (e) {
-                /* fall through */
-            }
-        }
-
+        // Report the disconnect right away instead of waiting for the closed
+        // promise. That promise can settle late, or not at all, while a mobile
+        // browser is tearing down a QUIC connection, and until it did the C#
+        // client stayed "connecting" and refused every reconnect. MWT.Close
+        // closes the session and nulls MWT.transport, so the closed promise is
+        // ignored when it does settle and nothing is reported twice.
         MWT.Close(MWT.ERROR_CONNECTION_CLOSED, "disconnected locally");
     },
 
@@ -440,9 +478,24 @@ var MirrorWTransportLibrary = {
             frame[4] = channel & 255;
             frame.set(payload, MWT.FRAME_HEADER);
 
+            // A reliable frame cannot be dropped without breaking the stream, so
+            // if the uplink has stalled this badly the session is unusable.
+            if (MWT.pendingSendBytes + frame.length > MWT.MAX_PENDING_SEND_BYTES) {
+                MWT.Fail(MWT.ERROR_UNEXPECTED,
+                    "more than " + MWT.MAX_PENDING_SEND_BYTES + " bytes are waiting to be sent; the connection has stalled");
+                return 0;
+            }
+
+            var transport = MWT.transport;
+            var size = frame.length;
+            MWT.pendingSendBytes += size;
+
             // Writes on a WritableStream are queued in call order, so this keeps
             // the channel ordered without awaiting each one.
-            MWT.reliableWriter.write(frame).catch(function (e) {
+            MWT.reliableWriter.write(frame).then(function () {
+                if (MWT.IsCurrent(transport)) MWT.pendingSendBytes -= size;
+            }, function (e) {
+                if (!MWT.IsCurrent(transport)) return;
                 MWT.Close(MWT.ERROR_CONNECTION_CLOSED, "reliable send failed: " + e);
             });
             return 1;
@@ -463,6 +516,7 @@ var MirrorWTransportLibrary = {
         if (MWT.events.length === 0) return 0;
 
         var event = MWT.events.shift();
+        if (event.data) MWT.queuedBytes = Math.max(0, MWT.queuedBytes - event.data.length);
         var kind = event.kind;
         var code = event.code | 0;
         var channel = event.channel | 0;
