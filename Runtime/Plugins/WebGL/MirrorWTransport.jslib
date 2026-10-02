@@ -266,8 +266,13 @@ var MirrorWTransportLibrary = {
         },
 
         ReadReliable: function (transport, reader) {
+            function fail(e) {
+                if (!MWT.IsCurrent(transport)) return;
+                MWT.Close(MWT.ERROR_CONNECTION_CLOSED, "reliable stream ended: " + e);
+            }
+
             function step() {
-                return reader.read().then(function (result) {
+                reader.read().then(function (result) {
                     if (!MWT.IsCurrent(transport)) return;
                     if (result.done) {
                         MWT.Close(MWT.ERROR_CONNECTION_CLOSED, "the server closed the reliable stream");
@@ -278,19 +283,16 @@ var MirrorWTransportLibrary = {
                     MWT.Parse();
 
                     if (!MWT.IsCurrent(transport)) return;
-                    return step();
-                });
+                    step();
+                }).catch(fail);
             }
 
-            step().catch(function (e) {
-                if (!MWT.IsCurrent(transport)) return;
-                MWT.Close(MWT.ERROR_CONNECTION_CLOSED, "reliable stream ended: " + e);
-            });
+            step();
         },
 
         ReadDatagrams: function (transport, reader) {
             function step() {
-                return reader.read().then(function (result) {
+                reader.read().then(function (result) {
                     if (result.done) return;
                     if (!MWT.IsCurrent(transport)) return;
 
@@ -303,14 +305,14 @@ var MirrorWTransportLibrary = {
                         }
                     }
 
-                    return step();
+                    step();
+                }).catch(function () {
+                    // The datagram reader always errors out when the session
+                    // ends; the closed promise reports the actual reason.
                 });
             }
 
-            step().catch(function () {
-                // The datagram reader always errors out when the session ends;
-                // the closed promise reports the actual reason.
-            });
+            step();
         },
 
         // -----------------------------------------------------------------
